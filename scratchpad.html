@@ -16,7 +16,19 @@
         <div class="status" id="status">Loaded</div>
       </div>
     </div>
-    <textarea id="scratchpad" placeholder="Start typing... Your notes will automatically sync across your Firefox devices."></textarea>
+    <div class="toolbar">
+      <button class="toolbar-btn" data-command="bold" title="Bold (Ctrl+B)"><strong>B</strong></button>
+      <button class="toolbar-btn" data-command="italic" title="Italic (Ctrl+I)"><em>I</em></button>
+      <button class="toolbar-btn" data-command="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+      <span class="toolbar-separator"></span>
+      <button class="toolbar-btn" id="linkBtn" title="Insert Link (Ctrl+K)">🔗 Link</button>
+      <span class="toolbar-separator"></span>
+      <button class="toolbar-btn" data-command="insertUnorderedList" title="Bullet List">• List</button>
+      <button class="toolbar-btn" data-command="insertOrderedList" title="Numbered List">1. List</button>
+      <span class="toolbar-separator"></span>
+      <button class="toolbar-btn" data-command="removeFormat" title="Clear Formatting">Clear</button>
+    </div>
+    <div id="scratchpad" contenteditable="true" spellcheck="true" data-placeholder="Start typing... Your notes will automatically sync across your Firefox devices. Use Ctrl+B for bold, Ctrl+I for italic, Ctrl+U for underline."></div>
   </div>
   <script src="scratchpad.js"></script>
 </body>

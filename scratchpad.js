@@ -1,7 +1,9 @@
-const textarea = document.getElementById('scratchpad');
+const scratchpad = document.getElementById('scratchpad');
 const statusDiv = document.getElementById('status');
 const lastUpdateDiv = document.getElementById('lastUpdate');
 const refreshBtn = document.getElementById('refreshBtn');
+const linkBtn = document.getElementById('linkBtn');
+const toolbarBtns = document.querySelectorAll('.toolbar-btn');
 
 let saveTimeout;
 const SAVE_DELAY = 500; // milliseconds to wait after typing stops before saving
@@ -39,6 +41,123 @@ function updateLastUpdateTime() {
   lastUpdateDiv.textContent = `Updated: ${timeStr}`;
 }
 
+// Sanitize URL to prevent XSS attacks
+function sanitizeURL(url) {
+  if (!url) return '';
+
+  // Remove whitespace
+  url = url.trim();
+
+  // Only allow http, https, mailto, and tel protocols
+  const allowedProtocols = ['http:', 'https:', 'mailto:', 'tel:'];
+
+  try {
+    const parsed = new URL(url);
+    if (allowedProtocols.includes(parsed.protocol)) {
+      return url;
+    }
+  } catch (e) {
+    // If URL parsing fails, assume it's a relative URL or domain without protocol
+    // Add https:// if it looks like a domain
+    if (url.match(/^[a-zA-Z0-9][a-zA-Z0-9-._]*\.[a-zA-Z]{2,}/)) {
+      return 'https://' + url;
+    }
+  }
+
+  // Block dangerous protocols like javascript:, data:, file:, etc.
+  return '';
+}
+
+// Sanitize HTML to only allow safe formatting tags
+function sanitizeHTML(html) {
+  // Use DOMParser to safely parse HTML without innerHTML
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+
+  // Allowed tags for formatting
+  const allowedTags = ['B', 'STRONG', 'I', 'EM', 'U', 'UL', 'OL', 'LI', 'BR', 'DIV', 'P', 'SPAN', 'A'];
+
+  // Recursively sanitize nodes
+  function sanitizeNode(node) {
+    // If it's a text node, keep it
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.cloneNode(true);
+    }
+
+    // If it's an element node
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      // Only allow specific tags
+      if (!allowedTags.includes(node.tagName)) {
+        // For disallowed tags, just return their text content
+        return document.createTextNode(node.textContent);
+      }
+
+      // Create a clean version of the allowed element
+      const cleanNode = document.createElement(node.tagName);
+
+      // Special handling for <a> tags - allow href but sanitize it
+      if (node.tagName === 'A') {
+        const href = node.getAttribute('href');
+        const sanitizedHref = sanitizeURL(href);
+
+        if (sanitizedHref) {
+          cleanNode.setAttribute('href', sanitizedHref);
+          cleanNode.setAttribute('target', '_blank');
+          cleanNode.setAttribute('rel', 'noopener noreferrer');
+        } else {
+          // If href is unsafe, convert to plain text
+          return document.createTextNode(node.textContent);
+        }
+      }
+
+      // Recursively sanitize children
+      for (const child of node.childNodes) {
+        const sanitizedChild = sanitizeNode(child);
+        if (sanitizedChild) {
+          cleanNode.appendChild(sanitizedChild);
+        }
+      }
+
+      return cleanNode;
+    }
+
+    return null;
+  }
+
+  // Sanitize all children from the body
+  const fragment = document.createDocumentFragment();
+  for (const child of doc.body.childNodes) {
+    const sanitizedChild = sanitizeNode(child);
+    if (sanitizedChild) {
+      fragment.appendChild(sanitizedChild);
+    }
+  }
+
+  return fragment;
+}
+
+// Get content from editor as HTML string
+function getContent() {
+  // Serialize DOM to string without using innerHTML
+  const serializer = new XMLSerializer();
+  let html = '';
+  for (const child of scratchpad.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      html += child.textContent;
+    } else {
+      html += serializer.serializeToString(child);
+    }
+  }
+  return html;
+}
+
+// Set content in editor (with sanitization)
+function setContent(html) {
+  const sanitizedFragment = sanitizeHTML(html);
+  // Use replaceChildren instead of innerHTML
+  scratchpad.replaceChildren(sanitizedFragment);
+}
+
 // Load saved content when page opens
 async function loadContent() {
   try {
@@ -48,7 +167,7 @@ async function loadContent() {
 
     const result = await storageArea.get('scratchpadContent');
     if (result.scratchpadContent) {
-      textarea.value = result.scratchpadContent;
+      setContent(result.scratchpadContent);
       lastSavedContent = result.scratchpadContent;
       console.log(`Loaded ${result.scratchpadContent.length} characters from storage`);
     }
@@ -63,8 +182,10 @@ async function loadContent() {
 
 // Save content to storage
 async function saveContent() {
+  const currentContent = getContent();
+
   // Only save if content has actually changed
-  if (textarea.value === lastSavedContent) {
+  if (currentContent === lastSavedContent) {
     console.log('Content unchanged, skipping save');
     return;
   }
@@ -76,13 +197,13 @@ async function saveContent() {
     }
 
     await storageArea.set({
-      scratchpadContent: textarea.value
+      scratchpadContent: currentContent
     });
-    lastSavedContent = textarea.value;
+    lastSavedContent = currentContent;
     contentChanged = false;
     updateStatus('saved');
     updateLastUpdateTime();
-    console.log(`Saved ${textarea.value.length} characters to ${usingSyncStorage ? 'sync' : 'local'} storage`);
+    console.log(`Saved ${currentContent.length} characters to ${usingSyncStorage ? 'sync' : 'local'} storage`);
   } catch (error) {
     console.error('Error saving content:', error);
     updateStatus('error', error.message);
@@ -133,8 +254,106 @@ function debouncedSave() {
   }, SAVE_DELAY);
 }
 
-// Listen for changes in the textarea
-textarea.addEventListener('input', debouncedSave);
+// Execute formatting command
+function executeCommand(command) {
+  document.execCommand(command, false, null);
+  scratchpad.focus();
+  contentChanged = true;
+}
+
+// Create a hyperlink
+function createLink() {
+  // Get selected text
+  const selection = window.getSelection();
+  const selectedText = selection.toString();
+
+  // Prompt for URL
+  let url = prompt('Enter URL:', selectedText.match(/^https?:\/\//) ? selectedText : 'https://');
+
+  if (url) {
+    // Sanitize the URL
+    url = sanitizeURL(url);
+
+    if (url) {
+      // Create the link
+      document.execCommand('createLink', false, url);
+
+      // Find the newly created link and add security attributes
+      const links = scratchpad.querySelectorAll('a[href]:not([target])');
+      links.forEach(link => {
+        link.setAttribute('target', '_blank');
+        link.setAttribute('rel', 'noopener noreferrer');
+      });
+
+      scratchpad.focus();
+      contentChanged = true;
+    } else {
+      alert('Invalid URL. Please use http://, https://, mailto:, or tel: URLs.');
+    }
+  }
+}
+
+// Handle keyboard shortcuts
+scratchpad.addEventListener('keydown', (e) => {
+  // Ctrl+B for bold
+  if (e.ctrlKey && e.key === 'b') {
+    e.preventDefault();
+    executeCommand('bold');
+  }
+  // Ctrl+I for italic
+  else if (e.ctrlKey && e.key === 'i') {
+    e.preventDefault();
+    executeCommand('italic');
+  }
+  // Ctrl+U for underline
+  else if (e.ctrlKey && e.key === 'u') {
+    e.preventDefault();
+    executeCommand('underline');
+  }
+  // Ctrl+K for link
+  else if (e.ctrlKey && e.key === 'k') {
+    e.preventDefault();
+    createLink();
+  }
+});
+
+// Listen for changes in the editor
+scratchpad.addEventListener('input', debouncedSave);
+
+// Handle clicks on links - open them in new tabs
+scratchpad.addEventListener('click', (e) => {
+  // Check if clicked element is a link or inside a link
+  const link = e.target.closest('a[href]');
+
+  if (link) {
+    e.preventDefault();
+    const href = link.getAttribute('href');
+
+    // Sanitize the URL before opening
+    const sanitizedHref = sanitizeURL(href);
+
+    if (sanitizedHref) {
+      window.open(sanitizedHref, '_blank', 'noopener,noreferrer');
+    }
+  }
+});
+
+// Handle toolbar button clicks
+toolbarBtns.forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const command = btn.dataset.command;
+    if (command) {
+      executeCommand(command);
+    }
+  });
+});
+
+// Handle link button click
+linkBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  createLink();
+});
 
 // Handle refresh button click
 refreshBtn.addEventListener('click', async () => {
@@ -159,15 +378,12 @@ browser.storage.onChanged.addListener((changes, areaName) => {
     const newValue = changes.scratchpadContent.newValue || '';
     console.log(`Storage changed: ${newValue.length} chars`);
 
-    // Only update if the content is different from what's currently in the textarea
-    if (newValue !== textarea.value) {
+    // Only update if the content is different from what's currently in the editor
+    if (newValue !== getContent()) {
       console.log('⚡ Real-time sync update detected');
-      const cursorPosition = textarea.selectionStart;
-      textarea.value = newValue;
+      setContent(newValue);
       lastSavedContent = newValue;
       contentChanged = false;
-      // Try to restore cursor position if possible
-      textarea.setSelectionRange(cursorPosition, cursorPosition);
       updateLastUpdateTime();
     }
   }
@@ -176,7 +392,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 // Periodic auto-save - saves every 5 seconds if content has changed
 function startAutoSave() {
   autoSaveInterval = setInterval(() => {
-    if (contentChanged && textarea.value !== lastSavedContent) {
+    if (contentChanged && getContent() !== lastSavedContent) {
       saveContent();
     }
   }, AUTO_SAVE_INTERVAL);
@@ -192,12 +408,13 @@ async function checkForSyncUpdates() {
 
     const result = await storageArea.get('scratchpadContent');
     const storedContent = result.scratchpadContent || '';
+    const currentContent = getContent();
 
-    console.log(`Sync check: stored=${storedContent.length} chars, current=${textarea.value.length} chars, lastSaved=${lastSavedContent.length} chars`);
+    console.log(`Sync check: stored=${storedContent.length} chars, current=${currentContent.length} chars, lastSaved=${lastSavedContent.length} chars`);
 
-    // Only update if stored content is different from current textarea
+    // Only update if stored content is different from current editor
     // and different from what we last saved (to avoid overwriting user's typing)
-    if (storedContent !== textarea.value && storedContent !== lastSavedContent) {
+    if (storedContent !== currentContent && storedContent !== lastSavedContent) {
       // Check if user is currently typing (has made changes since last save)
       const userIsTyping = contentChanged;
 
@@ -205,18 +422,15 @@ async function checkForSyncUpdates() {
 
       if (!userIsTyping) {
         // Safe to update - user isn't actively typing
-        const cursorPosition = textarea.selectionStart;
-        textarea.value = storedContent;
+        setContent(storedContent);
         lastSavedContent = storedContent;
         contentChanged = false;
-        // Try to restore cursor position
-        textarea.setSelectionRange(cursorPosition, cursorPosition);
         updateLastUpdateTime();
         console.log(`✓ Pulled ${storedContent.length} characters from storage`);
       } else {
         console.log('⚠ Update available but user is typing - deferring update');
       }
-    } else if (storedContent === textarea.value) {
+    } else if (storedContent === currentContent) {
       console.log('✓ Content in sync');
     } else {
       console.log('Content matches last saved version');
@@ -241,7 +455,7 @@ window.addEventListener('beforeunload', () => {
     clearInterval(syncCheckInterval);
   }
   // Do a final save if there are unsaved changes
-  if (contentChanged && textarea.value !== lastSavedContent) {
+  if (contentChanged && getContent() !== lastSavedContent) {
     saveContent();
   }
 });
